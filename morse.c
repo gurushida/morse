@@ -14,18 +14,23 @@
 #include <linux/tty_driver.h>
 #include <linux/kd.h>
 #include <linux/console_struct.h>
+#include <linux/device.h>
 
 
 #define AUTHOR "gurushida"
 #define DESCRIPTION "This is a sample module that converts into morse characters written to the device"
 
 #define DEVICE_NAME "morse"
+#define CLASS_NAME "morse"
 
 #define NORMAL_LEDS 0xFF
 #define LEDS_ON 0x07
 
 
 static int major;
+static struct class* morseClass = NULL;
+static struct device* morseDevice = NULL;
+
 
 static atomic_t write_in_progress=ATOMIC_INIT(0);
 
@@ -297,21 +302,56 @@ static struct file_operations operations = {
 };
 
 
+
+/**
+ * This is meant to set the permissions to rw-rw-rw- for /dev/morse
+ */
+static char *my_devnode(struct device *dev, umode_t *mode) {
+	if (!mode) return NULL;
+	if (dev->devt == MKDEV(major, 0)) *mode = 0666;
+	return NULL;
+}
+
+
 static int __init my_module_init(void) {
 	major = register_chrdev(0, DEVICE_NAME, &operations);
 	if (major < 0) {
 		printk(KERN_ALERT "Error #%d occurred while registering the char device\n", major);
 		return major;
 	}
+
+	// Register the device class
+	morseClass = class_create(THIS_MODULE, CLASS_NAME);
+	if (IS_ERR(morseClass)) {
+		unregister_chrdev(major, DEVICE_NAME);
+		printk(KERN_ALERT "Failed to register device class\n");
+		return PTR_ERR(morseClass);
+	}
+	printk(KERN_INFO "'morse' device class registered correctly\n");
+
+	morseClass->devnode = my_devnode;
+
+	// Register the device driver in /dev/morse
+	morseDevice = device_create(morseClass, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
+	if (IS_ERR(morseDevice)) {
+		class_destroy(morseClass);
+		unregister_chrdev(major, DEVICE_NAME);
+		printk(KERN_ALERT "Failed to create the device /dev/%s\n", DEVICE_NAME);
+		return PTR_ERR(morseDevice);
+	}
+
 	printk(KERN_INFO "%s is registered with major number %d\n", DEVICE_NAME, major);
 	printk(KERN_INFO "See it with 'cat /proc/device'\n");
-	printk(KERN_INFO "Please create a device file with 'mknod -m 0666 /dev/%s c %d 0'\n", DEVICE_NAME, major);
+	printk(KERN_INFO "You can now write ASCII text to /dev/%s and read from it to get the morse translation\n", DEVICE_NAME);
 	return 0;
 }
 
 
 
 static void __exit my_module_exit(void) {
+	device_destroy(morseClass, MKDEV(major, 0));
+	class_unregister(morseClass);
+	class_destroy(morseClass);
 	unregister_chrdev(major, DEVICE_NAME);
 	printk(KERN_INFO "Unloading module, bye.\n");
 }
@@ -319,7 +359,7 @@ static void __exit my_module_exit(void) {
 module_init(my_module_init);
 module_exit(my_module_exit);
 
-MODULE_LICENSE("GPL3");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR(AUTHOR);
 MODULE_DESCRIPTION(DESCRIPTION);
 
